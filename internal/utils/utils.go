@@ -7,6 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"bytes"
+	"io"
+	"log"
+	"mime/quotedprintable"
+
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -75,6 +80,41 @@ func IsValidRole(role string) bool {
 	return role == "admin" || role == "user"
 }
 
+// cleanMessageContent removes unwanted signatures and normalizes content
+func cleanMessageContent(content string) string {
+	log.Printf("Cleaning content (before): %q", content)
+
+	// First decode quoted-printable if needed
+	if strings.Contains(strings.ToLower(content), "=\r\n") || strings.Contains(strings.ToLower(content), "=\n") {
+		reader := quotedprintable.NewReader(strings.NewReader(content))
+		var buf bytes.Buffer
+		if _, err := io.Copy(&buf, reader); err == nil {
+			content = buf.String()
+		}
+	}
+
+	// Split into lines and remove signature line
+	lines := strings.Split(content, "\r\n")
+	cleanLines := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		// Skip any line containing "Sent from my iPhone"
+		if strings.Contains(line, "Sent from my iPhone") {
+			continue
+		}
+		cleanLines = append(cleanLines, line)
+	}
+
+	// Join lines back together
+	content = strings.Join(cleanLines, "\r\n")
+
+	// Final cleanup of any trailing whitespace or newlines
+	content = strings.TrimRight(content, "\r\n \t=")
+
+	log.Printf("Cleaning content (after): %q", content)
+	return content
+}
+
 // ExtractInlineMIMEParts extracts the inline parts from a MIME message body.
 // Any part is considered inline unless it has Content-Disposition: attachment.
 func ExtractInlineMIMEParts(body, boundary string) []string {
@@ -91,13 +131,34 @@ func ExtractInlineMIMEParts(body, boundary string) []string {
 		if strings.Contains(sectionLower, "content-disposition: attachment") {
 			continue
 		}
+
+		// Check if this part uses quoted-printable encoding
+		isQuotedPrintable := strings.Contains(sectionLower, "content-transfer-encoding: quoted-printable")
+
 		// Find the first empty line (headers/body separator)
+		var content string
 		if idx := strings.Index(section, "\r\n\r\n"); idx != -1 {
-			content := section[idx+4:]
-			parts = append(parts, strings.TrimSpace(content))
+			content = section[idx+4:]
 		} else if idx := strings.Index(section, "\n\n"); idx != -1 {
-			content := section[idx+2:]
-			parts = append(parts, strings.TrimSpace(content))
+			content = section[idx+2:]
+		}
+
+		content = strings.TrimSpace(content)
+
+		// Decode quoted-printable if needed
+		if isQuotedPrintable {
+			reader := quotedprintable.NewReader(strings.NewReader(content))
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, reader); err == nil {
+				content = buf.String()
+			}
+		}
+
+		// Clean up the content
+		content = cleanMessageContent(content)
+
+		if content != "" {
+			parts = append(parts, content)
 		}
 	}
 	return parts
