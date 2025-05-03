@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-type Email struct {
+type Event struct {
 	ID        int64     `json:"id"`
 	Tags      []string  `json:"tags"`
 	Body      string    `json:"body"`
@@ -10,14 +10,14 @@ type Email struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type EmailRequest struct {
+type EventRequest struct {
 	Tags   []string `json:"tags"`
 	Body   string   `json:"body"`
 	Source string   `json:"source"`
 }
 
-// EmailResponse represents a list of emails
-type EmailResponse struct {
-	Emails []Email `json:"emails"`
+// EventResponse represents a list of events
+type EventResponse struct {
+	Events []Event `json:"events"`
 	Total  int     `json:"total"`
 }

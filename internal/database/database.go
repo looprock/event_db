@@ -9,33 +9,23 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
 type Database struct {
 	db *sql.DB
 }
 
-func New(dbPath string) (*Database, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+// NewPostgres creates a new Database instance using PostgreSQL connection info.
+func NewPostgres(connStr string) (*Database, error) {
+	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, err
 	}
-
-	// Create emails table if it doesn't exist
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS emails (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			tags TEXT NOT NULL,
-			body TEXT NOT NULL,
-			source TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
+	// Optionally: ping to check connection
+	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-
 	return &Database{db: db}, nil
 }
 
@@ -43,82 +33,68 @@ func (d *Database) Close() error {
 	return d.db.Close()
 }
 
-// LogEmailStatus logs the status of an email operation
-func (d *Database) LogEmailStatus(emailID int64, status string, errorMessage string) error {
+// LogEventStatus logs the status of an event operation
+func (d *Database) LogEventStatus(eventID int64, status string, errorMessage string) error {
 	_, err := d.db.Exec(
-		"INSERT INTO email_logs (email_id, status, error_message) VALUES (?, ?, ?)",
-		emailID,
+		"INSERT INTO event_logs (event_id, status, error_message) VALUES ($1, $2, $3)",
+		eventID,
 		status,
 		errorMessage,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to log email status: %w", err)
+		return fmt.Errorf("failed to log event status: %w", err)
 	}
 	return nil
 }
 
-func (d *Database) StoreEmail(email *models.EmailRequest) (*models.Email, error) {
-	// Convert tags slice to JSON string for storage
-	tagsJSON, err := json.Marshal(email.Tags)
+func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error) {
+	tagsJSON, err := json.Marshal(event.Tags)
 	if err != nil {
-		// Log the error
-		if logErr := d.LogEmailStatus(0, "error", fmt.Sprintf("failed to marshal tags: %v", err)); logErr != nil {
+		if logErr := d.LogEventStatus(0, "error", fmt.Sprintf("failed to marshal tags: %v", err)); logErr != nil {
 			log.Printf("Failed to log error: %v", logErr)
 		}
 		return nil, err
 	}
 
-	// Strip trailing newlines from body
-	cleanBody := strings.TrimRight(email.Body, "\r\n")
+	cleanBody := strings.TrimRight(event.Body, "\r\n")
 
-	result, err := d.db.Exec(
-		"INSERT INTO emails (tags, body, source, created_at) VALUES (?, ?, ?, ?)",
+	var id int64
+	err = d.db.QueryRow(
+		"INSERT INTO events (tags, body, source, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
 		string(tagsJSON),
 		cleanBody,
-		email.Source,
+		event.Source,
 		time.Now(),
-	)
+	).Scan(&id)
 	if err != nil {
-		// Log the error
-		if logErr := d.LogEmailStatus(0, "error", fmt.Sprintf("failed to insert email: %v", err)); logErr != nil {
+		if logErr := d.LogEventStatus(0, "error", fmt.Sprintf("failed to insert event: %v", err)); logErr != nil {
 			log.Printf("Failed to log error: %v", logErr)
 		}
 		return nil, err
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		// Log the error
-		if logErr := d.LogEmailStatus(0, "error", fmt.Sprintf("failed to get last insert ID: %v", err)); logErr != nil {
-			log.Printf("Failed to log error: %v", logErr)
-		}
-		return nil, err
-	}
-
-	// Log success
-	if err := d.LogEmailStatus(id, "success", ""); err != nil {
+	if err := d.LogEventStatus(id, "success", ""); err != nil {
 		log.Printf("Failed to log success: %v", err)
 	}
 
-	return &models.Email{
+	return &models.Event{
 		ID:        id,
-		Tags:      email.Tags,
+		Tags:      event.Tags,
 		Body:      cleanBody,
-		Source:    email.Source,
+		Source:    event.Source,
 		CreatedAt: time.Now(),
 	}, nil
 }
 
-// GetEmailByID retrieves an email by its ID
-func (d *Database) GetEmailByID(id int64) (*models.Email, error) {
-	var email models.Email
+func (d *Database) GetEventByID(id int64) (*models.Event, error) {
+	var event models.Event
 	var tagsJSON string
-	var createdAt string
+	var createdAt time.Time
 
 	err := d.db.QueryRow(
-		"SELECT id, tags, body, source, created_at FROM emails WHERE id = ?",
+		"SELECT id, tags, body, source, created_at FROM events WHERE id = $1",
 		id,
-	).Scan(&email.ID, &tagsJSON, &email.Body, &email.Source, &createdAt)
+	).Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -126,78 +102,84 @@ func (d *Database) GetEmailByID(id int64) (*models.Email, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Parse the created_at timestamp
-	email.CreatedAt, err = time.Parse("2006-01-02 15:04:05", createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
-	}
-
-	// Parse the tags JSON
-	if err := json.Unmarshal([]byte(tagsJSON), &email.Tags); err != nil {
+	event.CreatedAt = createdAt
+	if err := json.Unmarshal([]byte(tagsJSON), &event.Tags); err != nil {
 		return nil, fmt.Errorf("failed to parse tags: %w", err)
 	}
 
-	return &email, nil
+	return &event, nil
 }
 
-// GetEmailsByTag retrieves all emails that contain a specific tag
-func (d *Database) GetEmailsByTag(tag string) ([]models.Email, error) {
-	// Use a simpler JSON array contains check
-	rows, err := d.db.Query(`
-		SELECT id, tags, body, source, created_at 
-		FROM emails 
-		WHERE tags LIKE ?
+func (d *Database) GetEventsByTag(tag string) ([]models.Event, error) {
+	rows, err := d.db.Query(
+		`SELECT id, tags, body, source, created_at 
+		FROM events 
+		WHERE tags::text LIKE $1 
 		ORDER BY created_at DESC`,
-		fmt.Sprintf("%%\"%s\"%%", tag))
+		fmt.Sprintf("%%\"%s\"%%", tag),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query emails: %w", err)
+		return nil, fmt.Errorf("failed to query events: %w", err)
 	}
 	defer rows.Close()
 
-	var emails []models.Email
+	var events []models.Event
 	for rows.Next() {
-		var email models.Email
+		var event models.Event
 		var tagsJSON string
-		var createdAt string
+		var createdAt time.Time
 
-		if err := rows.Scan(&email.ID, &tagsJSON, &email.Body, &email.Source, &createdAt); err != nil {
-			return nil, fmt.Errorf("failed to scan email row: %w", err)
+		if err := rows.Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt); err != nil {
+			return nil, fmt.Errorf("failed to scan event row: %w", err)
 		}
 
-		// Clean up the timestamp by removing newlines
-		createdAt = strings.ReplaceAll(createdAt, "\n", "")
-
-		// Parse the created_at timestamp, trying multiple formats
-		parsed := false
-		for _, format := range []string{
-			"2006-01-02 15:04:05.999999-07:00", // SQLite format with microseconds and timezone
-			time.RFC3339,                       // RFC3339
-			"2006-01-02 15:04:05",              // Basic format
-		} {
-			if t, err := time.Parse(format, createdAt); err == nil {
-				email.CreatedAt = t
-				parsed = true
-				break
-			}
-		}
-
-		if !parsed {
-			log.Printf("Warning: Could not parse timestamp %q, using current time", createdAt)
-			email.CreatedAt = time.Now()
-		}
-
-		// Parse the tags JSON
-		if err := json.Unmarshal([]byte(tagsJSON), &email.Tags); err != nil {
+		event.CreatedAt = createdAt
+		if err := json.Unmarshal([]byte(tagsJSON), &event.Tags); err != nil {
 			return nil, fmt.Errorf("failed to parse tags: %w", err)
 		}
 
-		emails = append(emails, email)
+		events = append(events, event)
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 
-	return emails, nil
+	return events, nil
+}
+
+// GetEventsByDate retrieves all events created on a specific date (YYYY-MM-DD)
+func (d *Database) GetEventsByDate(date string) ([]models.Event, error) {
+	start := date + " 00:00:00"
+	end := date + " 23:59:59.999999"
+	rows, err := d.db.Query(
+		`SELECT id, tags, body, source, created_at 
+		FROM events 
+		WHERE created_at >= $1 AND created_at <= $2 
+		ORDER BY created_at ASC`,
+		start, end,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []models.Event
+	for rows.Next() {
+		var event models.Event
+		var tagsJSON string
+		var createdAt time.Time
+		if err := rows.Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt); err != nil {
+			return nil, err
+		}
+		event.CreatedAt = createdAt
+		if err := json.Unmarshal([]byte(tagsJSON), &event.Tags); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }

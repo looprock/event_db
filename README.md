@@ -1,6 +1,6 @@
 # Example API
 
-A simple API that receives email data and stores it in a SQLite database.
+A simple API that receives event data and stores it in a PostgreSQL database.
 
 ## Setup
 
@@ -23,14 +23,14 @@ The application uses environment variables for configuration:
 # Server Configuration
 PORT=8081           # Port for the API server (default: 8081)
 API_TOKEN=secret    # Required authentication token
-DB_PATH=./data/emails.db  # Database path (default: ./data/emails.db)
+DB_PATH=./data/events.db  # Database path (default: ./data/events.db)
 ```
 
 ## API Endpoints
 
-### POST /api/emails
+### POST /api/events
 
-Receives and stores email data.
+Receives and stores event data.
 
 **Headers:**
 - `Authorization`: API token (required)
@@ -39,8 +39,8 @@ Receives and stores email data.
 **Request Body:**
 ```json
 {
-  "subjects": ["word1", "word2", "..."],
-  "body": "email body content"
+  "tags": ["word1", "word2", "..."],
+  "body": "event body content"
 }
 ```
 
@@ -48,21 +48,31 @@ Receives and stores email data.
 ```json
 {
   "id": 1,
-  "subjects": ["word1", "word2", "..."],
-  "body": "email body content",
+  "tags": ["word1", "word2", "..."],
+  "body": "event body content",
   "created_at": "2024-04-25T20:48:34Z"
 }
 ```
 
+### GET /api/events?tag=word
+Returns all events with the given tag.
+
+### GET /api/events/by-date?date=YYYY-MM-DD
+Returns all events created on the given date.
+
+### GET /api/events/:id
+Returns a single event by ID.
+
 ## Database Schema
 
-The application uses SQLite with the following schema:
+The application uses PostgreSQL with the following schema:
 
 ```sql
-CREATE TABLE emails (
+CREATE TABLE events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    subjects TEXT NOT NULL,  -- JSON array of subjects
+    tags TEXT NOT NULL,  -- JSON array of tags
     body TEXT NOT NULL,
+    source TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```

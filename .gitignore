@@ -28,3 +28,4 @@ go.work.sum
 *.db
 notes.txt
 data/*
+config.yaml

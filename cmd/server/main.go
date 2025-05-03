@@ -2,10 +2,10 @@ package main
 
 import (
 	"example-api/internal/api"
+	"example-api/internal/config"
 	"example-api/internal/database"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,32 +18,24 @@ func main() {
 
 	log.Println("Starting example API server...")
 
-	// Get configuration from environment variables
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "./data/emails.db"
-	}
-	log.Printf("Using database at: %s", dbPath)
-
-	apiToken := os.Getenv("API_TOKEN")
-	if apiToken == "" {
-		log.Fatal("API_TOKEN environment variable is required")
-	}
-	log.Println("API token configured successfully")
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8081"
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Ensure data directory exists
-	if err := os.MkdirAll("./data", 0755); err != nil {
-		log.Printf("Warning: Failed to create data directory: %v", err)
-	}
+	// Build PostgreSQL connection string
+	pgConnStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Database.Host,
+		cfg.Database.Port,
+		cfg.Database.User,
+		cfg.Database.Password,
+		cfg.Database.Name,
+		cfg.Database.SSLMode,
+	)
 
-	// Initialize database
 	log.Println("Initializing database...")
-	db, err := database.New(dbPath)
+	db, err := database.NewPostgres(pgConnStr)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -70,12 +62,13 @@ func main() {
 	handler := api.New(db)
 
 	// Set up routes
-	router.POST("/api/emails", api.AuthMiddleware(apiToken), handler.HandleEmailReceive)
-	router.GET("/api/emails/:id", handler.HandleGetEmailByID)
-	router.GET("/api/emails", handler.HandleGetEmailsByTag)
+	router.POST("/api/events", api.AuthMiddleware(cfg.Server.APIToken), handler.HandleEventReceive)
+	router.GET("/api/events/:id", handler.HandleGetEventByID)
+	router.GET("/api/events", handler.HandleGetEventsByTag)
+	router.GET("/api/events/by-date", handler.HandleGetEventsByDate)
 
 	// Start server
-	address := ":" + port
+	address := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("Server initialization complete. Listening on %s", address)
 	if err := router.Run(address); err != nil {
 		log.Fatalf("Failed to start server: %v", err)

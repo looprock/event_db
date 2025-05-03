@@ -2,33 +2,39 @@ package main
 
 import (
 	"database/sql"
+	"example-api/internal/config"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
 func main() {
 	log.SetPrefix("[example-api] ")
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
 
-	// Get database path from environment or use default
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "./data/emails.db"
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	log.Printf("Running migrations on database: %s", dbPath)
+	pgConnStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Database.Host,
+		cfg.Database.Port,
+		cfg.Database.User,
+		cfg.Database.Password,
+		cfg.Database.Name,
+		cfg.Database.SSLMode,
+	)
 
-	// Ensure the database directory exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		log.Fatalf("Failed to create database directory: %v", err)
-	}
+	log.Printf("Running migrations on database: %s", cfg.Database.Name)
 
 	// Open database connection
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("postgres", pgConnStr)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

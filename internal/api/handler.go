@@ -50,9 +50,9 @@ func AuthMiddleware(validToken string) gin.HandlerFunc {
 	}
 }
 
-// HandleEmailReceive processes incoming email data
-func (h *Handler) HandleEmailReceive(c *gin.Context) {
-	log.Printf("Received email request with Content-Type: %s", c.GetHeader("Content-Type"))
+// HandleEventReceive processes incoming event data
+func (h *Handler) HandleEventReceive(c *gin.Context) {
+	log.Printf("Received event request with Content-Type: %s", c.GetHeader("Content-Type"))
 
 	var incoming struct {
 		Data struct {
@@ -92,50 +92,42 @@ func (h *Handler) HandleEmailReceive(c *gin.Context) {
 	if len(tags) == 0 {
 		tags = []string{"untagged"}
 	}
+	// Convert all tags to lowercase
+	for i, tag := range tags {
+		tags[i] = strings.ToLower(tag)
+	}
 	log.Printf("Extracted tags: %v", tags)
 
 	// --- Begin: Extract only the inline MIME part if present ---
-	boundary := ""
-	if strings.HasPrefix(incoming.Data.Body, "--") {
-		lines := strings.SplitN(incoming.Data.Body, "\n", 2)
-		if len(lines) > 0 {
-			boundary = strings.TrimPrefix(strings.TrimSpace(lines[0]), "--")
-		}
+	plainBody, err := utils.ExtractPlain([]byte(incoming.Data.Body))
+	if err != nil {
+		log.Printf("Failed to extract plain body: %v", err)
+		plainBody = incoming.Data.Body // fallback to original
 	}
-
-	inlineParts := []string{}
-	if boundary != "" {
-		inlineParts = utils.ExtractInlineMIMEParts(incoming.Data.Body, boundary)
-	}
-
-	bodyToStore := incoming.Data.Body
-	if len(inlineParts) > 0 {
-		// Store only the first inline part, or join all if you prefer
-		bodyToStore = inlineParts[0]
-	}
+	bodyToStore := plainBody
 	// --- End: Extract only the inline MIME part if present ---
 
 	// Store in database
-	email := &models.EmailRequest{
+	event := &models.EventRequest{
 		Tags:   tags,
 		Body:   bodyToStore,
 		Source: incoming.Source,
 	}
 
-	log.Printf("Storing email: %+v", email)
-	storedEmail, err := h.db.StoreEmail(email)
+	log.Printf("Storing event: %+v", event)
+	storedEvent, err := h.db.StoreEvent(event)
 	if err != nil {
-		log.Printf("Failed to store email: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store email"})
+		log.Printf("Failed to store event: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store event"})
 		return
 	}
 
-	log.Printf("Successfully stored email with ID: %d", storedEmail.ID)
-	c.JSON(http.StatusCreated, storedEmail)
+	log.Printf("Successfully stored event with ID: %d", storedEvent.ID)
+	c.JSON(http.StatusCreated, storedEvent)
 }
 
-// HandleGetEmailByID handles GET requests to retrieve an email by ID
-func (h *Handler) HandleGetEmailByID(c *gin.Context) {
+// HandleGetEventByID handles GET requests to retrieve an event by ID
+func (h *Handler) HandleGetEventByID(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -143,41 +135,69 @@ func (h *Handler) HandleGetEmailByID(c *gin.Context) {
 		return
 	}
 
-	email, err := h.db.GetEmailByID(id)
+	event, err := h.db.GetEventByID(id)
 	if err != nil {
-		log.Printf("Failed to get email: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve email"})
+		log.Printf("Failed to get event: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve event"})
 		return
 	}
 
-	if email == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Email not found"})
+	if event == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
 		return
 	}
 
-	c.JSON(http.StatusOK, email)
+	c.JSON(http.StatusOK, event)
 }
 
-// HandleGetEmailsByTag handles GET requests to retrieve emails by tag
-func (h *Handler) HandleGetEmailsByTag(c *gin.Context) {
+// HandleGetEventsByTag handles GET requests to retrieve events by tag
+func (h *Handler) HandleGetEventsByTag(c *gin.Context) {
 	tag := c.Query("tag")
 	if tag == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Tag parameter is required"})
 		return
 	}
 
-	log.Printf("Searching for emails with tag: %s", tag)
-	emails, err := h.db.GetEmailsByTag(tag)
+	log.Printf("Searching for events with tag: %s", tag)
+	events, err := h.db.GetEventsByTag(tag)
 	if err != nil {
-		log.Printf("Failed to get emails by tag %q: %+v", tag, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to retrieve emails: %v", err)})
+		log.Printf("Failed to get events by tag %q: %+v", tag, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to retrieve events: %v", err)})
 		return
 	}
 
-	log.Printf("Found %d emails with tag %q", len(emails), tag)
-	response := models.EmailResponse{
-		Emails: emails,
-		Total:  len(emails),
+	log.Printf("Found %d events with tag %q", len(events), tag)
+	response := models.EventResponse{
+		Events: events,
+		Total:  len(events),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// HandleGetEventsByDate handles GET requests to retrieve events by date (YYYY-MM-DD)
+func (h *Handler) HandleGetEventsByDate(c *gin.Context) {
+	date := c.Query("date")
+	if date == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Date parameter is required (YYYY-MM-DD)"})
+		return
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format. Use YYYY-MM-DD."})
+		return
+	}
+
+	events, err := h.db.GetEventsByDate(date)
+	if err != nil {
+		log.Printf("Failed to get events by date %q: %+v", date, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to retrieve events: %v", err)})
+		return
+	}
+
+	log.Printf("Found %d events for date %q", len(events), date)
+	response := models.EventResponse{
+		Events: events,
+		Total:  len(events),
 	}
 
 	c.JSON(http.StatusOK, response)

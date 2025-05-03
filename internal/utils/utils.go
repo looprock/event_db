@@ -10,9 +10,11 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"mime/multipart"
 	"mime/quotedprintable"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jaytaylor/html2text"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -115,51 +117,62 @@ func cleanMessageContent(content string) string {
 	return content
 }
 
-// ExtractInlineMIMEParts extracts the inline parts from a MIME message body.
-// Any part is considered inline unless it has Content-Disposition: attachment.
-func ExtractInlineMIMEParts(body, boundary string) []string {
-	parts := []string{}
-	boundaryMarker := "--" + boundary
-	sections := strings.Split(body, boundaryMarker)
-	for _, section := range sections {
-		section = strings.TrimSpace(section)
-		if section == "" || strings.HasSuffix(section, "--") {
-			continue
+// ExtractPlain tries to pull the "best" plain-text representation out of
+// whatever you give it:
+//
+//   - multipart body that starts with "--boundary" lines ➜ first text/plain part
+//   - multipart with only text/html           ➜ html→text conversion
+//   - anything else (already plain text)      ➜ returned as-is
+func ExtractPlain(data []byte) (string, error) {
+	trimmed := bytes.TrimSpace(data)
+
+	// quick heuristic: multipart bodies always start with `--something`
+	if !bytes.HasPrefix(trimmed, []byte("--")) {
+		return string(trimmed), nil // already plain text
+	}
+
+	// ── try multipart ───────────────────────────────────────────────
+	// find the first line   -->  boundary string
+	nl := bytes.IndexByte(trimmed, '\n')
+	if nl == -1 {
+		return string(trimmed), nil
+	}
+	boundary := strings.TrimPrefix(
+		strings.TrimSpace(string(trimmed[:nl])),
+		"--")
+
+	mr := multipart.NewReader(bytes.NewReader(trimmed), boundary)
+
+	var plain, html string
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
 		}
-		sectionLower := strings.ToLower(section)
-		// Skip attachments
-		if strings.Contains(sectionLower, "content-disposition: attachment") {
-			continue
+		if err != nil {
+			// Not multipart after all → fall back
+			return string(trimmed), nil
 		}
-
-		// Check if this part uses quoted-printable encoding
-		isQuotedPrintable := strings.Contains(sectionLower, "content-transfer-encoding: quoted-printable")
-
-		// Find the first empty line (headers/body separator)
-		var content string
-		if idx := strings.Index(section, "\r\n\r\n"); idx != -1 {
-			content = section[idx+4:]
-		} else if idx := strings.Index(section, "\n\n"); idx != -1 {
-			content = section[idx+2:]
-		}
-
-		content = strings.TrimSpace(content)
-
-		// Decode quoted-printable if needed
-		if isQuotedPrintable {
-			reader := quotedprintable.NewReader(strings.NewReader(content))
-			var buf bytes.Buffer
-			if _, err := io.Copy(&buf, reader); err == nil {
-				content = buf.String()
-			}
-		}
-
-		// Clean up the content
-		content = cleanMessageContent(content)
-
-		if content != "" {
-			parts = append(parts, content)
+		ct := p.Header.Get("Content-Type")
+		body, _ := io.ReadAll(p)
+		switch {
+		case strings.HasPrefix(ct, "text/plain"):
+			plain = string(body)
+		case strings.HasPrefix(ct, "text/html"):
+			html = string(body)
 		}
 	}
-	return parts
+
+	if plain != "" {
+		return strings.TrimSpace(plain), nil
+	}
+	if html != "" {
+		txt, err := html2text.FromString(html, html2text.Options{})
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(txt), nil
+	}
+	// multipart but neither plain nor html found
+	return "", nil
 }
