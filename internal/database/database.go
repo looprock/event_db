@@ -56,13 +56,13 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 		return nil, err
 	}
 
-	cleanBody := strings.TrimRight(event.Body, "\r\n")
+	cleanData := strings.TrimRight(event.Data, "\r\n")
 
 	var id int64
 	err = d.db.QueryRow(
-		"INSERT INTO events (tags, body, source, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
+		"INSERT INTO events (tags, data, source, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
 		string(tagsJSON),
-		cleanBody,
+		cleanData,
 		event.Source,
 		time.Now(),
 	).Scan(&id)
@@ -80,7 +80,7 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 	return &models.Event{
 		ID:        id,
 		Tags:      event.Tags,
-		Body:      cleanBody,
+		Data:      cleanData,
 		Source:    event.Source,
 		CreatedAt: time.Now(),
 	}, nil
@@ -92,9 +92,9 @@ func (d *Database) GetEventByID(id int64) (*models.Event, error) {
 	var createdAt time.Time
 
 	err := d.db.QueryRow(
-		"SELECT id, tags, body, source, created_at FROM events WHERE id = $1",
+		"SELECT id, tags, data, source, created_at FROM events WHERE id = $1",
 		id,
-	).Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt)
+	).Scan(&event.ID, &tagsJSON, &event.Data, &event.Source, &createdAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -112,7 +112,7 @@ func (d *Database) GetEventByID(id int64) (*models.Event, error) {
 
 func (d *Database) GetEventsByTag(tag string) ([]models.Event, error) {
 	rows, err := d.db.Query(
-		`SELECT id, tags, body, source, created_at 
+		`SELECT id, tags, data, source, created_at 
 		FROM events 
 		WHERE tags::text LIKE $1 
 		ORDER BY created_at DESC`,
@@ -129,7 +129,7 @@ func (d *Database) GetEventsByTag(tag string) ([]models.Event, error) {
 		var tagsJSON string
 		var createdAt time.Time
 
-		if err := rows.Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &tagsJSON, &event.Data, &event.Source, &createdAt); err != nil {
 			return nil, fmt.Errorf("failed to scan event row: %w", err)
 		}
 
@@ -153,7 +153,7 @@ func (d *Database) GetEventsByDate(date string) ([]models.Event, error) {
 	start := date + " 00:00:00"
 	end := date + " 23:59:59.999999"
 	rows, err := d.db.Query(
-		`SELECT id, tags, body, source, created_at 
+		`SELECT id, tags, data, source, created_at 
 		FROM events 
 		WHERE created_at >= $1 AND created_at <= $2 
 		ORDER BY created_at ASC`,
@@ -169,7 +169,7 @@ func (d *Database) GetEventsByDate(date string) ([]models.Event, error) {
 		var event models.Event
 		var tagsJSON string
 		var createdAt time.Time
-		if err := rows.Scan(&event.ID, &tagsJSON, &event.Body, &event.Source, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &tagsJSON, &event.Data, &event.Source, &createdAt); err != nil {
 			return nil, err
 		}
 		event.CreatedAt = createdAt

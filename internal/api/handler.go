@@ -59,7 +59,7 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 			From                    string              `json:"from"`
 			To                      string              `json:"to"`
 			Subject                 string              `json:"subject"`
-			Body                    string              `json:"body"`
+			Data                    string              `json:"data"`
 			Cc                      []string            `json:"cc,omitempty"`
 			Bcc                     []string            `json:"bcc,omitempty"`
 			MessageID               string              `json:"message_id,omitempty"`
@@ -99,18 +99,18 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 	log.Printf("Extracted tags: %v", tags)
 
 	// --- Begin: Extract only the inline MIME part if present ---
-	plainBody, err := utils.ExtractPlain([]byte(incoming.Data.Body))
+	plainData, err := utils.ExtractPlain([]byte(incoming.Data.Data))
 	if err != nil {
-		log.Printf("Failed to extract plain body: %v", err)
-		plainBody = incoming.Data.Body // fallback to original
+		log.Printf("Failed to extract plain data: %v", err)
+		plainData = incoming.Data.Data // fallback to original
 	}
-	bodyToStore := plainBody
+	dataToStore := plainData
 	// --- End: Extract only the inline MIME part if present ---
 
 	// Store in database
 	event := &models.EventRequest{
 		Tags:   tags,
-		Body:   bodyToStore,
+		Data:   dataToStore,
 		Source: incoming.Source,
 	}
 

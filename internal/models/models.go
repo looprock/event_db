@@ -36,7 +36,7 @@ type ReceivedEmail struct {
 	MappingID   int64     `json:"mapping_id"`
 	FromAddress string    `json:"from_address"`
 	Subject     string    `json:"subject,omitempty"`
-	Body        string    `json:"body"`
+	Data        string    `json:"data"`
 	ReceivedAt  time.Time `json:"received_at"`
 	ProcessedAt time.Time `json:"processed_at,omitempty"`
 	Status      string    `json:"status"`

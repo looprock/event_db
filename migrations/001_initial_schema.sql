@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS events (
     id SERIAL PRIMARY KEY,
     tags TEXT NOT NULL,  -- JSON array of tags
-    body TEXT NOT NULL,
+    data TEXT NOT NULL,
     source TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
