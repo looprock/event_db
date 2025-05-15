@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"example-api/internal/auth"
 	"example-api/internal/database"
 	"example-api/internal/models"
@@ -10,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,7 +34,8 @@ type TemplateData struct {
 	Event        *models.Event
 	RelatedEvents []models.Event
 	RecentEvents []models.Event
-	PopularTags  []string
+	Tags         []string
+	Sources      []string
 	Stats        struct {
 		TotalEvents  int
 		UniqueTags   int
@@ -57,30 +58,18 @@ type TemplateData struct {
 
 // NewWebHandler creates a new WebHandler
 func NewWebHandler(db *database.Database, auth *auth.Auth, apiToken string) (*WebHandler, error) {
-	// Initialize templates
-	tmpl, err := template.New("").Funcs(template.FuncMap{
+	// Get the working directory
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
+	
+	// Create template function map
+	funcMap := template.FuncMap{
 		"join":  strings.Join,
 		"split": strings.Split,
 		"add":   func(a, b int) int { return a + b },
 		"sub":   func(a, b int) int { return a - b },
-		"seq": func(start, end int) []int {
-			var result []int
-			for i := start; i <= end; i++ {
-				result = append(result, i)
-			}
-			return result
-		},
-		"contains": func(s []string, e string) bool {
-			for _, a := range s {
-				if a == e {
-					return true
-				}
-			}
-			return false
-		},
-		"formatDate": func(t time.Time, layout string) string {
-			return t.Format(layout)
-		},
 		"slice": func(s string, start, end int) string {
 			if start < 0 {
 				start = 0
@@ -90,14 +79,44 @@ func NewWebHandler(db *database.Database, auth *auth.Auth, apiToken string) (*We
 			}
 			return s[start:end]
 		},
-		"safeHTML": func(s string) template.HTML {
-			return template.HTML(s)
-		},
 		"now": time.Now,
-	}).ParseGlob("templates/**/*.html")
+	}
+	
+	// Initialize templates with simple approach
+	tmpl := template.New("").Funcs(funcMap)
+	
+	// Define template directories to scan
+	templateRootDir := filepath.Join(workingDir, "templates")
+	log.Printf("Loading templates from: %s", templateRootDir)
+	
+	// Find all template files recursively
+	var templateFiles []string
+	
+	// Helper function to walk through directories and find template files
+	err = filepath.Walk(templateRootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".html") {
+			log.Printf("Found template: %s", path)
+			templateFiles = append(templateFiles, path)
+		}
+		return nil
+	})
 	
 	if err != nil {
-		return nil, fmt.Errorf("failed to load templates: %w", err)
+		return nil, fmt.Errorf("error scanning templates: %w", err)
+	}
+	
+	// Parse all templates at once
+	tmpl, err = tmpl.ParseFiles(templateFiles...)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing templates: %w", err)
+	}
+	
+	// List all templates that were loaded
+	for _, t := range tmpl.Templates() {
+		log.Printf("Template loaded: %s", t.Name())
 	}
 
 	return &WebHandler{
@@ -111,40 +130,76 @@ func NewWebHandler(db *database.Database, auth *auth.Auth, apiToken string) (*We
 
 // SetupRoutes configures the routes for the web interface
 func (h *WebHandler) SetupRoutes(r *mux.Router) {
+	// Serve static files
+	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+	r.PathPrefix("/public/").Handler(http.StripPrefix("/public/", http.FileServer(http.Dir("./public"))))
+	
 	// Authentication routes
 	r.HandleFunc("/login", h.HandleLogin).Methods("GET")
 	r.HandleFunc("/login", h.HandleLoginPost).Methods("POST")
-	r.HandleFunc("/logout", h.HandleLogout).Methods("POST")
+	r.HandleFunc("/logout", h.HandleLogout).Methods("GET", "POST")
 
+	// Root route handler - will show welcome page when logged out, events when logged in
+	r.HandleFunc("/", h.HandleRoot).Methods("GET")
+	
+	// Events redirect for backward compatibility with existing links
+	r.HandleFunc("/events", h.HandleEventsRedirect).Methods("GET")
+	
 	// Protected routes
 	protected := r.NewRoute().Subrouter()
 	protected.Use(h.auth.RequireAuth)
+	protected.HandleFunc("/events/new", h.HandleCreateEvent).Methods("GET")
+	protected.HandleFunc("/events/new", h.HandleCreateEventPost).Methods("POST")
+	protected.HandleFunc("/events/{id}", h.HandleViewEvent).Methods("GET")
+	protected.HandleFunc("/events/{id}/edit", h.HandleEditEvent).Methods("GET")
+	protected.HandleFunc("/events/{id}/edit", h.HandleEditEventPost).Methods("POST")
+	protected.HandleFunc("/events/{id}/delete", h.HandleDeleteEvent).Methods("GET")
+}
 
-	// Dashboard
-	protected.HandleFunc("/", h.HandleDashboard).Methods("GET")
-	protected.HandleFunc("/dashboard", h.HandleDashboard).Methods("GET")
-
-	// Events
-	protected.HandleFunc("/events", h.HandleEventsList).Methods("GET")
-	protected.HandleFunc("/events/new", h.HandleEventNew).Methods("GET")
-	protected.HandleFunc("/events", h.HandleEventCreate).Methods("POST")
-	protected.HandleFunc("/events/{id:[0-9]+}", h.HandleEventView).Methods("GET")
-	protected.HandleFunc("/events/{id:[0-9]+}/edit", h.HandleEventEdit).Methods("GET")
-	protected.HandleFunc("/events/{id:[0-9]+}", h.HandleEventUpdate).Methods("POST", "PUT")
-	protected.HandleFunc("/events/{id:[0-9]+}", h.HandleEventDelete).Methods("DELETE")
+// renderTemplate is a helper function to render templates with proper content
+func (h *WebHandler) renderTemplate(w http.ResponseWriter, name string, data TemplateData) {
+	// Set content type for all templates
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute the named template
+	err := h.templates.ExecuteTemplate(w, name, data)
+	
+	if err != nil {
+		log.Printf("Error rendering template %s: %v", name, err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
 // HandleLogin handles the login page
 func (h *WebHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	// Check if already logged in
+	// Check if user is already logged in
 	if cookie, err := r.Cookie("session"); err == nil {
-		if _, err := h.auth.GetSession(cookie.Value); err == nil {
-			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-			return
+		if session, err := h.auth.GetSession(cookie.Value); err == nil {
+			if user, _ := h.auth.GetUserByID(session.UserID); user != nil {
+				// User is logged in, redirect to home (which will show events)
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
 		}
 	}
-
-	h.renderTemplate(w, r, "pages/login", nil)
+	
+	data := TemplateData{}
+	
+	// Set data properties if needed
+	if msg, ok := r.URL.Query()["error"]; ok && len(msg) > 0 {
+		data.FlashMessage = msg[0]
+		data.FlashType = "error"
+	}
+	
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute template directly
+	err := h.templates.ExecuteTemplate(w, "login.html", data)
+	if err != nil {
+		log.Printf("Error rendering login template: %v", err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
 // HandleLoginPost handles the login form submission
@@ -154,24 +209,24 @@ func (h *WebHandler) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.auth.Authenticate(username, password)
 	if err != nil {
-		h.setFlash(w, "Invalid username or password", "error")
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		// Redirect back to login with error
+		http.Redirect(w, r, "/login?error=Invalid+username+or+password.+Please+try+again.", http.StatusSeeOther)
 		return
 	}
 
 	session, err := h.auth.CreateSession(user.ID)
 	if err != nil {
-		h.setFlash(w, "Failed to create session", "error")
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, "/login?error=Failed+to+create+session.+Please+try+again+later.", http.StatusSeeOther)
 		return
 	}
 
 	auth.SetSessionCookie(w, session)
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // HandleLogout handles user logout
 func (h *WebHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	// Handle both GET and POST requests for logout
 	if cookie, err := r.Cookie("session"); err == nil {
 		h.auth.DeleteSession(cookie.Value)
 	}
@@ -179,447 +234,486 @@ func (h *WebHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// HandleDashboard displays the dashboard
-func (h *WebHandler) HandleDashboard(w http.ResponseWriter, r *http.Request) {
-	user := auth.GetUserFromContext(r.Context())
+
+
+// HandleRoot displays either welcome page or events based on login status
+func (h *WebHandler) HandleRoot(w http.ResponseWriter, r *http.Request) {
+	// Check if user is logged in
+	var user *auth.User
+	if cookie, err := r.Cookie("session"); err == nil {
+		if session, err := h.auth.GetSession(cookie.Value); err == nil {
+			user, _ = h.auth.GetUserByID(session.UserID)
+		}
+	}
 	
-	// Get stats for dashboard
-	// For a real app, you would add methods to get these stats from the database
-	// For now, we'll use some sample data
-	
-	// Get recent events
-	recentEvents, err := h.db.GetEventsByTag("")
-	if err != nil {
-		h.renderError(w, r, err, http.StatusInternalServerError)
+	// If user is logged in, show events list
+	if user != nil {
+		h.displayEventsList(w, r, user)
 		return
 	}
 	
-	// Limit to 5 most recent
-	if len(recentEvents) > 5 {
-		recentEvents = recentEvents[:5]
-	}
+	// User is not logged in, show welcome page
+	data := TemplateData{}
 	
-	// Get all unique tags
-	tagMap := make(map[string]int) // tag -> count
-	for _, event := range recentEvents {
-		for _, tag := range event.Tags {
-			tagMap[tag]++
-		}
-	}
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	
-	// Convert to sorted slice
-	var popularTags []string
-	for tag := range tagMap {
-		popularTags = append(popularTags, tag)
-		if len(popularTags) >= 10 {
-			break
-		}
-	}
-	
-	data := TemplateData{
-		User:         user,
-		RecentEvents: recentEvents,
-		PopularTags:  popularTags,
-	}
-	
-	// Set stats
-	data.Stats.TotalEvents = len(recentEvents)
-	data.Stats.UniqueTags = len(tagMap)
-	data.Stats.RecentEvents = len(recentEvents)
-	
-	h.renderTemplate(w, r, "pages/dashboard", data)
-}
-
-// HandleEventsList displays the list of events
-func (h *WebHandler) HandleEventsList(w http.ResponseWriter, r *http.Request) {
-	user := auth.GetUserFromContext(r.Context())
-	
-	// Get filter parameters
-	tag := r.URL.Query().Get("tag")
-	date := r.URL.Query().Get("date")
-	source := r.URL.Query().Get("source")
-	
-	// Get pagination parameters
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	perPage := 20
-
-	// Get filtered events
-	var events []models.Event
-	var err error
-	
-	if tag != "" {
-		events, err = h.db.GetEventsByTag(tag)
-	} else if date != "" {
-		events, err = h.db.GetEventsByDate(date)
-	} else {
-		events, err = h.db.GetEventsByTag("") // Get all events
-	}
-	
+	// Execute template
+	err := h.templates.ExecuteTemplate(w, "index.html", data)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusInternalServerError)
-		return
+		log.Printf("Error rendering index template: %v", err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
 	}
-	
-	// Filter by source if provided
-	if source != "" {
-		var filteredEvents []models.Event
-		for _, event := range events {
-			if strings.Contains(strings.ToLower(event.Source), strings.ToLower(source)) {
-				filteredEvents = append(filteredEvents, event)
-			}
-		}
-		events = filteredEvents
-	}
-	
-	// Paginate results
-	totalItems := len(events)
-	totalPages := (totalItems + perPage - 1) / perPage
-	
-	start := (page - 1) * perPage
-	end := start + perPage
-	if end > totalItems {
-		end = totalItems
-	}
-	
-	if start < totalItems {
-		events = events[start:end]
-	} else {
-		events = []models.Event{}
-	}
-	
-	data := TemplateData{
-		User:   user,
-		Events: events,
-		Filter: struct {
-			Tag    string
-			Date   string
-			Source string
-		}{
-			Tag:    tag,
-			Date:   date,
-			Source: source,
-		},
-		Pagination: struct {
-			CurrentPage  int
-			TotalPages   int
-			TotalItems   int
-			ItemsPerPage int
-		}{
-			CurrentPage:  page,
-			TotalPages:   totalPages,
-			TotalItems:   totalItems,
-			ItemsPerPage: perPage,
-		},
-	}
-	
-	h.renderTemplate(w, r, "pages/events", data)
 }
 
-// HandleEventView displays a single event
-func (h *WebHandler) HandleEventView(w http.ResponseWriter, r *http.Request) {
-	user := auth.GetUserFromContext(r.Context())
-	
-	// Get event ID from URL
+// HandleEventsRedirect redirects /events to root while preserving query parameters
+func (h *WebHandler) HandleEventsRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/?"+r.URL.RawQuery, http.StatusSeeOther)
+}
+
+// HandleViewEvent displays a single event
+func (h *WebHandler) HandleViewEvent(w http.ResponseWriter, r *http.Request) {
+	// Get the event ID from the URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
+	
+	// Convert ID to int64
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusBadRequest)
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 	
-	// Get event
+	// Get the event
 	event, err := h.db.GetEventByID(id)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusInternalServerError)
+		http.Error(w, "Error retrieving event", http.StatusInternalServerError)
 		return
 	}
 	
 	if event == nil {
-		h.renderError(w, r, fmt.Errorf("event not found"), http.StatusNotFound)
+		http.Error(w, "Event not found", http.StatusNotFound)
 		return
 	}
 	
-	// Get related events (events with the same tags)
-	var relatedEvents []models.Event
-	for _, tag := range event.Tags {
-		events, err := h.db.GetEventsByTag(tag)
-		if err != nil {
-			continue
-		}
-		
-		// Add events that aren't already in relatedEvents
-		for _, e := range events {
-			if e.ID == event.ID {
-				continue // Skip the current event
-			}
-			
-			// Check if already in relatedEvents
-			found := false
-			for _, re := range relatedEvents {
-				if re.ID == e.ID {
-					found = true
-					break
-				}
-			}
-			
-			if !found {
-				relatedEvents = append(relatedEvents, e)
-			}
-			
-			// Limit to 5 related events
-			if len(relatedEvents) >= 5 {
-				break
-			}
-		}
-		
-		// If we have enough related events, stop
-		if len(relatedEvents) >= 5 {
-			break
-		}
-	}
-	
+	// Prepare template data
 	data := TemplateData{
-		User:          user,
-		Event:         event,
-		RelatedEvents: relatedEvents,
+		Event: event,
 	}
 	
-	h.renderTemplate(w, r, "pages/event_detail", data)
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute template
+	templateName := "view.html"
+	err = h.templates.ExecuteTemplate(w, templateName, data)
+	if err != nil {
+		log.Printf("Error rendering event view template %s: %v", templateName, err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
-// HandleEventNew displays the form to create a new event
-func (h *WebHandler) HandleEventNew(w http.ResponseWriter, r *http.Request) {
-	user := auth.GetUserFromContext(r.Context())
+// displayEventsList is a helper function to show the events list
+func (h *WebHandler) displayEventsList(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	// Get query parameters for filtering
+	tag := r.URL.Query().Get("tag")
+	date := r.URL.Query().Get("date")
+	source := r.URL.Query().Get("source")
+	
+	// Get all unique tags from the database
+	allTags, err := h.db.GetAllTags()
+	if err != nil {
+		log.Printf("Error fetching tags: %v", err)
+		allTags = []string{} // Use empty list if there's an error
+	}
+	
+	// Get all unique sources from the database
+	allSources, err := h.db.GetAllSources()
+	if err != nil {
+		log.Printf("Error fetching sources: %v", err)
+		allSources = []string{} // Use empty list if there's an error
+	}
+	
+	// Fetch events based on filters
+	var events []models.Event
+	var fetchErr error
+	
+	log.Printf("Filtering events - Tag: '%s', Date: '%s', Source: '%s'", tag, date, source)
+	
+	if date != "" {
+		// If date filter is provided
+		log.Printf("Fetching events by date: %s", date)
+		events, fetchErr = h.db.GetEventsByDate(date)
+		
+		// Apply additional source filter if provided
+		if source != "" && fetchErr == nil {
+			log.Printf("Additionally filtering %d events by source: %s", len(events), source)
+			var filteredEvents []models.Event
+			for _, event := range events {
+				if event.Source != "" && strings.EqualFold(event.Source, source) {
+					filteredEvents = append(filteredEvents, event)
+				}
+			}
+			events = filteredEvents
+			log.Printf("After source filtering: %d events remain", len(events))
+		}
+		
+		// Apply additional tag filter if provided
+		if tag != "" && fetchErr == nil {
+			log.Printf("Additionally filtering %d events by tag: %s", len(events), tag)
+			var filteredEvents []models.Event
+			for _, event := range events {
+				for _, eventTag := range event.Tags {
+					if strings.EqualFold(eventTag, tag) {
+						filteredEvents = append(filteredEvents, event)
+						break
+					}
+				}
+			}
+			events = filteredEvents
+			log.Printf("After tag filtering: %d events remain", len(events))
+		}
+	} else if source != "" {
+		// If source filter is provided
+		log.Printf("Fetching events by source: %s", source)
+		events, fetchErr = h.db.GetEventsBySource(source)
+		
+		// Apply additional tag filter if provided
+		if tag != "" && fetchErr == nil {
+			log.Printf("Additionally filtering %d events by tag: %s", len(events), tag)
+			var filteredEvents []models.Event
+			for _, event := range events {
+				for _, eventTag := range event.Tags {
+					if strings.EqualFold(eventTag, tag) {
+						filteredEvents = append(filteredEvents, event)
+						break
+					}
+				}
+			}
+			events = filteredEvents
+			log.Printf("After tag filtering: %d events remain", len(events))
+		}
+	} else {
+		// Default: filter by tag (or get all if tag is empty)
+		log.Printf("Fetching events by tag: %s", tag)
+		events, fetchErr = h.db.GetEventsByTag(tag)
+	}
+	
+	if fetchErr != nil {
+		log.Printf("Error fetching events: %v", fetchErr)
+		http.Error(w, "Error fetching events", http.StatusInternalServerError)
+		return
+	}
+	
+	log.Printf("Total events found: %d", len(events))
+	
+	// Prepare template data
+	data := TemplateData{
+		User:    user,
+		Events:  events,
+		Tags:    allTags,
+		Sources: allSources,
+	}
+	
+	// Set filter info
+	data.Filter.Tag = tag
+	data.Filter.Date = date
+	data.Filter.Source = source
+	
+	// Set pagination info
+	data.Pagination.CurrentPage = 1
+	data.Pagination.TotalPages = 1
+	data.Pagination.TotalItems = len(events)
+	data.Pagination.ItemsPerPage = 20
+	
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute the template
+	templateName := "list.html"
+	err = h.templates.ExecuteTemplate(w, templateName, data)
+	if err != nil {
+		log.Printf("Error rendering events template %s: %v", templateName, err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
+}
+
+// HandleCreateEvent displays the event creation form
+func (h *WebHandler) HandleCreateEvent(w http.ResponseWriter, r *http.Request) {
+	// Get user from context (if authenticated)
+	var user *auth.User
+	if cookie, err := r.Cookie("session"); err == nil {
+		if session, err := h.auth.GetSession(cookie.Value); err == nil {
+			user, _ = h.auth.GetUserByID(session.UserID)
+		}
+	}
 	
 	data := TemplateData{
 		User: user,
 	}
 	
-	h.renderTemplate(w, r, "pages/event_new", data)
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute template
+	templateName := "new.html"
+	err := h.templates.ExecuteTemplate(w, templateName, data)
+	if err != nil {
+		log.Printf("Error rendering event creation template %s: %v", templateName, err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
-// HandleEventCreate handles the form submission to create a new event
-func (h *WebHandler) HandleEventCreate(w http.ResponseWriter, r *http.Request) {
-	// Parse form
-	err := r.ParseForm()
-	if err != nil {
-		h.renderError(w, r, err, http.StatusBadRequest)
-		return
-	}
-	
-	// Get form values
-	tagsStr := r.FormValue("tags")
-	source := r.FormValue("source")
-	data := r.FormValue("data")
-	
-	// Validate
-	if tagsStr == "" || source == "" || data == "" {
-		h.setFlash(w, "All fields are required", "error")
+// HandleCreateEventPost handles the event creation form submission
+func (h *WebHandler) HandleCreateEventPost(w http.ResponseWriter, r *http.Request) {
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		h.setFlash(w, "Error processing form data", "error")
 		http.Redirect(w, r, "/events/new", http.StatusSeeOther)
 		return
 	}
 	
-	// Parse tags
-	tags := strings.Fields(tagsStr)
-	for i, tag := range tags {
-		tags[i] = strings.ToLower(tag)
+	// Get form data
+	data := r.FormValue("data")
+	tagsStr := r.FormValue("tags")
+	source := r.FormValue("source")
+	
+	// Validate required fields
+	if data == "" {
+		h.setFlash(w, "Event data is required", "error")
+		http.Redirect(w, r, "/events/new", http.StatusSeeOther)
+		return
+	}
+	
+	// Process tags
+	var tags []string
+	if tagsStr != "" {
+		for _, tag := range strings.Split(tagsStr, ",") {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				tags = append(tags, tag)
+			}
+		}
 	}
 	
 	// Create event
-	event := &models.EventRequest{
-		Tags:   tags,
-		Data:   data,
-		Source: source,
+	event := models.Event{
+		Data:      data,
+		Tags:      tags,
+		Source:    source,
+		CreatedAt: time.Now(),
 	}
 	
-	// Store in database
-	_, err = h.db.StoreEvent(event)
+	// Save event to database
+	err := h.db.SaveEvent(&event)
 	if err != nil {
-		h.setFlash(w, fmt.Sprintf("Failed to create event: %v", err), "error")
+		h.setFlash(w, fmt.Sprintf("Error creating event: %v", err), "error")
 		http.Redirect(w, r, "/events/new", http.StatusSeeOther)
 		return
 	}
 	
+	// Set success flash message
 	h.setFlash(w, "Event created successfully", "success")
-	http.Redirect(w, r, "/events", http.StatusSeeOther)
+	
+	// Redirect to the home page (which shows events when logged in)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// HandleEventEdit displays the form to edit an event
-func (h *WebHandler) HandleEventEdit(w http.ResponseWriter, r *http.Request) {
-	user := auth.GetUserFromContext(r.Context())
-	
-	// Get event ID from URL
+// HandleEditEvent displays the event edit form
+func (h *WebHandler) HandleEditEvent(w http.ResponseWriter, r *http.Request) {
+	// Get the event ID from the URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
+	
+	// Convert ID to int64
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusBadRequest)
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 	
-	// Get event
+	// Get the event
 	event, err := h.db.GetEventByID(id)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusInternalServerError)
+		http.Error(w, "Error retrieving event", http.StatusInternalServerError)
 		return
 	}
 	
 	if event == nil {
-		h.renderError(w, r, fmt.Errorf("event not found"), http.StatusNotFound)
+		http.Error(w, "Event not found", http.StatusNotFound)
 		return
 	}
 	
+	// Prepare template data
 	data := TemplateData{
-		User:  user,
 		Event: event,
 	}
 	
-	h.renderTemplate(w, r, "pages/event_edit", data)
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	
+	// Execute template
+	templateName := "edit.html"
+	err = h.templates.ExecuteTemplate(w, templateName, data)
+	if err != nil {
+		log.Printf("Error rendering event edit template %s: %v", templateName, err)
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
-// HandleEventUpdate handles the form submission to update an event
-func (h *WebHandler) HandleEventUpdate(w http.ResponseWriter, r *http.Request) {
-	// Parse form
-	err := r.ParseForm()
-	if err != nil {
-		h.renderError(w, r, err, http.StatusBadRequest)
-		return
-	}
-	
-	// Get event ID from URL
+// HandleEditEventPost processes the event edit form submission
+func (h *WebHandler) HandleEditEventPost(w http.ResponseWriter, r *http.Request) {
+	// Get the event ID from the URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
+	
+	// Convert ID to int64
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusBadRequest)
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 	
-	// Get form values
+	// Get the existing event
+	event, err := h.db.GetEventByID(id)
+	if err != nil {
+		http.Error(w, "Error retrieving event", http.StatusInternalServerError)
+		return
+	}
+	
+	if event == nil {
+		http.Error(w, "Event not found", http.StatusNotFound)
+		return
+	}
+	
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		h.setFlash(w, "Error processing form data", "error")
+		http.Redirect(w, r, fmt.Sprintf("/events/%d/edit", id), http.StatusSeeOther)
+		return
+	}
+	
+	// Get form data
+	data := r.FormValue("data")
 	tagsStr := r.FormValue("tags")
 	source := r.FormValue("source")
-	eventData := r.FormValue("data")
 	
-	// Validate
-	if tagsStr == "" || source == "" || eventData == "" {
-		h.setFlash(w, "All fields are required", "error")
-		http.Redirect(w, r, fmt.Sprintf("/events/%s/edit", idStr), http.StatusSeeOther)
+	// Log received form data for debugging
+	log.Printf("Edit event form data - ID: %d, Data length: %d, Tags: %s, Source: %s", 
+		id, len(data), tagsStr, source)
+	
+	// Validate required fields
+	if data == "" {
+		h.setFlash(w, "Event data is required", "error")
+		http.Redirect(w, r, fmt.Sprintf("/events/%d/edit", id), http.StatusSeeOther)
 		return
 	}
 	
-	// Parse tags
-	tags := strings.Fields(tagsStr)
-	for i, tag := range tags {
-		tags[i] = strings.ToLower(tag)
+	// Process tags
+	var tags []string
+	if tagsStr != "" {
+		for _, tag := range strings.Split(tagsStr, ",") {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				tags = append(tags, tag)
+				log.Printf("Added tag: %s", tag)
+			}
+		}
+	}
+	log.Printf("Final processed tags: %v", tags)
+	
+	// Update event fields
+	event.Data = data
+	if len(tags) > 0 {
+		event.Tags = tags
+	}
+	event.Source = source
+	
+	// Ensure we're not saving empty tags array if we had tags before
+	if len(event.Tags) == 0 && len(tagsStr) == 0 {
+		log.Printf("Warning: No tags provided but event previously had tags. Keeping existing tags.")
+		// Get fresh copy of event to ensure we have original tags
+		originalEvent, _ := h.db.GetEventByID(id)
+		if originalEvent != nil && len(originalEvent.Tags) > 0 {
+			event.Tags = originalEvent.Tags
+		}
 	}
 	
-	// Get existing event
-	existingEvent, err := h.db.GetEventByID(id)
+	// Save updated event to database
+	err = h.db.UpdateEvent(event)
 	if err != nil {
-		h.renderError(w, r, err, http.StatusInternalServerError)
+		log.Printf("Error updating event: %v", err)
+		h.setFlash(w, fmt.Sprintf("Error updating event: %v", err), "error")
+		http.Redirect(w, r, fmt.Sprintf("/events/%d/edit", id), http.StatusSeeOther)
 		return
 	}
 	
-	if existingEvent == nil {
-		h.renderError(w, r, fmt.Errorf("event not found"), http.StatusNotFound)
-		return
-	}
-	
-	// Create updated event
-	updatedEvent := &models.EventRequest{
-		Tags:   tags,
-		Data:   eventData,
-		Source: source,
-	}
-	
-	// Store in database
-	// Note: In a real application, you would add an UpdateEvent method to the database package
-	// Since we don't have that, we'll just store it as a new event
-	_, err = h.db.StoreEvent(updatedEvent)
-	if err != nil {
-		h.setFlash(w, fmt.Sprintf("Failed to update event: %v", err), "error")
-		http.Redirect(w, r, fmt.Sprintf("/events/%s/edit", idStr), http.StatusSeeOther)
-		return
-	}
-	
+	// Set success flash message
 	h.setFlash(w, "Event updated successfully", "success")
-	http.Redirect(w, r, fmt.Sprintf("/events/%s", idStr), http.StatusSeeOther)
+	
+	// Redirect to the home page (which shows events when logged in)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// HandleEventDelete handles the deletion of an event
-func (h *WebHandler) HandleEventDelete(w http.ResponseWriter, r *http.Request) {
-	// Get event ID from URL
+// HandleDeleteEvent handles the deletion of an event
+func (h *WebHandler) HandleDeleteEvent(w http.ResponseWriter, r *http.Request) {
+	// Get the event ID from the URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
+	
+	// Convert ID to int64
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		h.renderError(w, r, fmt.Errorf("invalid event ID"), http.StatusBadRequest)
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 	
-	// Note: In a real application, you would add a DeleteEvent method to the database package
-	// Since we don't have that, we'll just pretend it was deleted successfully
-	
-	// For an HTMX request, just return success
-	if r.Header.Get("HX-Request") == "true" {
-		w.WriteHeader(http.StatusOK)
-		return
+	// Delete the event
+	err = h.db.DeleteEvent(id)
+	if err != nil {
+		log.Printf("Error deleting event: %v", err)
+		h.setFlash(w, fmt.Sprintf("Error deleting event: %v", err), "error")
+	} else {
+		h.setFlash(w, "Event deleted successfully", "success")
 	}
 	
-	// For a regular request, redirect back to the events list
-	h.setFlash(w, "Event deleted successfully", "success")
-	http.Redirect(w, r, "/events", http.StatusSeeOther)
+	// Redirect to the events list
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// HandleDebug displays template debugging information
+func (h *WebHandler) HandleDebug(w http.ResponseWriter, r *http.Request) {
+	log.Printf("HandleDebug called with URL: %s", r.URL.String())
+	
+	// Build debug info
+	output := "Template Debug Information\n\n"
+	output += "Available Templates:\n"
+	
+	for _, t := range h.templates.Templates() {
+		output += fmt.Sprintf("- %s\n", t.Name())
+	}
+	
+	// Try to identify which template would be used
+	output += "\nTemplate Lookup Test:\n"
+	for _, name := range []string{"base.html", "login.html", "dashboard.html", "index.html"} {
+		tmpl := h.templates.Lookup(name)
+		if tmpl != nil {
+			output += fmt.Sprintf("- %s: FOUND\n", name)
+		} else {
+			output += fmt.Sprintf("- %s: NOT FOUND\n", name)
+		}
+	}
+	
+	// Current template being used
+	output += "\nCurrent route: " + r.URL.Path + "\n"
+	
+	// Render raw debug info
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, output)
 }
 
 // Helper methods
-
-// renderTemplate renders a template with the given data
-func (h *WebHandler) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data TemplateData) {
-	// Add flash message from session if it exists
-	if flashMessage, flashType := h.getFlash(r); flashMessage != "" {
-		data.FlashMessage = flashMessage
-		data.FlashType = flashType
-	}
-	
-	// Get layout template
-	tmpl := h.templates.Lookup(filepath.Join("layouts", "base.html"))
-	if tmpl == nil {
-		h.renderError(w, r, fmt.Errorf("layout template not found"), http.StatusInternalServerError)
-		return
-	}
-	
-	// Execute template
-	err := tmpl.ExecuteTemplate(w, "base", data)
-	if err != nil {
-		log.Printf("Error rendering template: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-	}
-}
-
-// renderError renders an error page
-func (h *WebHandler) renderError(w http.ResponseWriter, r *http.Request, err error, statusCode int) {
-	log.Printf("Error: %v", err)
-	http.Error(w, err.Error(), statusCode)
-}
-
-// setFlash sets a flash message in the session
 func (h *WebHandler) setFlash(w http.ResponseWriter, message string, messageType string) {
-	// Create a unique ID for this flash message
-	b := make([]byte, 16)
-	_, err := json.Marshal(map[string]string{
-		"message": message,
-		"type":    messageType,
-	})
-	if err != nil {
-		log.Printf("Error creating flash message: %v", err)
-		return
-	}
-	
-	// Store in session map
 	flashCookie := &http.Cookie{
 		Name:     "flash",
 		Value:    url.QueryEscape(message + "|" + messageType),
@@ -631,7 +725,6 @@ func (h *WebHandler) setFlash(w http.ResponseWriter, message string, messageType
 	http.SetCookie(w, flashCookie)
 }
 
-// getFlash retrieves and clears a flash message
 func (h *WebHandler) getFlash(r *http.Request) (string, string) {
 	flashCookie, err := r.Cookie("flash")
 	if err != nil {

@@ -4,63 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ block "title" . }}Event Database{{ end }}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
-    <script src="https://unpkg.com/htmx.org@1.9.5"></script>
-    <script src="https://unpkg.com/hyperscript.org@0.9.9"></script>
-    {{ block "styles" . }}{{ end }}
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; min-height: 100vh; }
+        header { background-color: #333; color: white; padding: 1rem; }
+        main { flex: 1; padding: 1rem; }
+        footer { background-color: #333; color: white; padding: 1rem; text-align: center; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { border: 1px solid #ddd; border-radius: 4px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .button { display: inline-block; background-color: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; margin-right: 10px; margin-top: 10px; }
+        .button:hover { background-color: #2980b9; }
+    </style>
 </head>
-<body class="bg-gray-100 min-h-screen flex flex-col">
-    <!-- Header -->
-    <header class="bg-blue-600 text-white">
-        <div class="container mx-auto px-4 py-4 flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold">Event DB</a>
-            {{ if .User }}
+<body>
+    <header>
+        <div class="container">
+            <h1>Event Database</h1>
             <nav>
-                <ul class="flex space-x-4">
-                    <li><a href="/dashboard" class="hover:underline">Dashboard</a></li>
-                    <li><a href="/events" class="hover:underline">Events</a></li>
-                    <li>
-                        <form action="/logout" method="POST" class="inline">
-                            <button type="submit" class="hover:underline">Logout</button>
-                        </form>
-                    </li>
-                </ul>
+                <a href="/">Home</a> |
+                <a href="/login">Login</a> |
+                <a href="/events">Events</a>
             </nav>
-            {{ else }}
-            <nav>
-                <ul class="flex space-x-4">
-                    <li><a href="/login" class="hover:underline">Login</a></li>
-                </ul>
-            </nav>
-            {{ end }}
         </div>
     </header>
 
-    <!-- Flash messages -->
-    {{ if .FlashMessage }}
-    <div class="container mx-auto mt-4 px-4">
-        <div class="{{ if eq .FlashType "error" }}bg-red-100 border border-red-400 text-red-700{{ else }}bg-green-100 border border-green-400 text-green-700{{ end }} px-4 py-3 rounded relative" role="alert">
-            <span class="block sm:inline">{{ .FlashMessage }}</span>
-            <button class="absolute top-0 bottom-0 right-0 px-4 py-3" onclick="this.parentElement.remove()">
-                <span class="sr-only">Close</span>
-                <svg class="fill-current h-6 w-6" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><title>Close</title><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
-            </button>
+    <main>
+        <div class="container">
+            {{ block "content" . }}
+            <p>Default content</p>
+            {{ end }}
         </div>
-    </div>
-    {{ end }}
-
-    <!-- Main content -->
-    <main class="container mx-auto px-4 py-6 flex-grow">
-        {{ block "content" . }}{{ end }}
     </main>
 
-    <!-- Footer -->
-    <footer class="bg-gray-800 text-white py-4">
-        <div class="container mx-auto px-4 text-center">
-            <p>&copy; {{ now.Year }} Event Database - All rights reserved</p>
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Event Database</p>
         </div>
     </footer>
-
-    {{ block "scripts" . }}{{ end }}
 </body>
 </html>

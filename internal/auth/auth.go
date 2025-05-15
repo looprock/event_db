@@ -192,7 +192,7 @@ func (a *Auth) InitializeDefaultUsers() {
 	a.mu.RUnlock()
 
 	if !adminExists {
-		a.CreateUser("admin", "adminpassword", "admin")
+		a.CreateUser("admin", "admin123", "admin")
 	}
 }
 

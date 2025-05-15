@@ -76,7 +76,7 @@ func main() {
 	})
 
 	// Create HTTP server
-	webAddr := fmt.Sprintf(":%d", cfg.Server.Port)
+	webAddr := fmt.Sprintf(":%d", 8082) // Changed port to 8082
 	server := &http.Server{
 		Addr:         webAddr,
 		Handler:      router,
