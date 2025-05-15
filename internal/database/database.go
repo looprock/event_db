@@ -65,8 +65,11 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 	}
 
 	cleanData := strings.TrimRight(event.Data, "\r\n")
+	log.Printf("DEBUG database: Original Data: %q, CleanData: %q (length=%d)", event.Data, cleanData, len(cleanData))
 
 	var id int64
+	log.Printf("DEBUG database: Executing SQL with params: tags=%s, data=%q, source=%s", 
+		string(tagsJSON), cleanData, event.Source)
 	err = d.db.QueryRow(
 		"INSERT INTO events (tags, data, source, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
 		string(tagsJSON),
@@ -74,6 +77,7 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 		event.Source,
 		time.Now(),
 	).Scan(&id)
+	log.Printf("DEBUG database: Insert result: id=%d, err=%v", id, err)
 	if err != nil {
 		// Log pre-insert error (will be logged to stdout since event ID is 0)
 		_ = d.LogEventStatus(0, "error", fmt.Sprintf("failed to insert event: %v", err))
@@ -85,13 +89,15 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 		log.Printf("Warning: Event was stored but failed to log success: %v", err)
 	}
 
-	return &models.Event{
+	result := &models.Event{
 		ID:        id,
 		Tags:      event.Tags,
 		Data:      cleanData,
 		Source:    event.Source,
 		CreatedAt: time.Now(),
-	}, nil
+	}
+	log.Printf("DEBUG database: Returning event result: %+v", result)
+	return result, nil
 }
 
 func (d *Database) GetEventByID(id int64) (*models.Event, error) {

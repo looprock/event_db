@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"example-api/internal/database"
 	"example-api/internal/models"
 	"example-api/internal/utils"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +23,29 @@ type Handler struct {
 
 func New(db *database.Database) *Handler {
 	return &Handler{db: db}
+}
+
+// For debugging - prints struct field names and their json tags
+func init() {
+	t := reflect.TypeOf(struct {
+		Data struct {
+			From                    string              `json:"from"`
+			To                      string              `json:"to"`
+			Subject                 string              `json:"subject"`
+			Data                    string              `json:"body"`
+			Cc                      []string            `json:"cc,omitempty"`
+			Bcc                     []string            `json:"bcc,omitempty"`
+		} `json:"data"`
+	}{})
+	
+	field, _ := t.FieldByName("Data")
+	log.Printf("DEBUG STRUCT: Outer field 'Data' has json tag: %q", field.Tag.Get("json"))
+	
+	inner := field.Type
+	for i := 0; i < inner.NumField(); i++ {
+		f := inner.Field(i)
+		log.Printf("DEBUG STRUCT: Inner field %q has json tag: %q", f.Name, f.Tag.Get("json"))
+	}
 }
 
 // AuthMiddleware checks for a valid token in the Authorization header
@@ -78,14 +104,24 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 		Source string `json:"source"`
 	}
 
+	// Capture raw JSON for debugging
+	var rawBody []byte
+	if c.Request.Body != nil {
+		rawBody, _ = io.ReadAll(c.Request.Body)
+		// Restore body for binding
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+		log.Printf("DEBUG: Raw JSON body: %s", string(rawBody))
+	}
+
 	if err := c.ShouldBindJSON(&incoming); err != nil {
 		log.Printf("Failed to decode JSON: %v", err)
-		log.Printf("Raw request body: %+v", c.Request.Body)
+		log.Printf("Raw request body: %s", string(rawBody))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
 
 	log.Printf("Decoded incoming data: %+v", incoming)
+	log.Printf("DEBUG: Body field from JSON: %q", incoming.Data.Data)
 
 	// Extract tags from subject
 	tags := strings.Fields(incoming.Data.Subject)
@@ -99,11 +135,49 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 	log.Printf("Extracted tags: %v", tags)
 
 	// --- Begin: Extract only the inline MIME part if present ---
-	plainData, err := utils.ExtractPlain([]byte(incoming.Data.Data))
+	var contentToProcess string
+	// Check if Data field is empty, use PlainBody as fallback
+	if incoming.Data.Data == "" && incoming.Data.PlainBody != "" {
+		log.Printf("DEBUG: Data field (mapped from 'body' in JSON) is empty, using PlainBody instead")
+		log.Printf("DEBUG: PlainBody content: %q", incoming.Data.PlainBody)
+		contentToProcess = incoming.Data.PlainBody
+	} else {
+		log.Printf("DEBUG: Using Data field (mapped from 'body' in JSON): %q", incoming.Data.Data)
+		contentToProcess = incoming.Data.Data
+	}
+	
+	// Try a simple content extraction first - look for content after blank line
+	// This works for simple MIME messages that follow the standard format
+	actualContent := extractSimpleContent(contentToProcess)
+	if actualContent != "" {
+		log.Printf("Successfully extracted simple content: %q", actualContent)
+		dataToStore := actualContent
+		// Store in database
+		event := &models.EventRequest{
+			Tags:   tags,
+			Data:   dataToStore,
+			Source: incoming.Source,
+		}
+		log.Printf("Storing event with simple extraction: %+v", event)
+		storedEvent, err := h.db.StoreEvent(event)
+		if err != nil {
+			log.Printf("Failed to store event: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store event"})
+			return
+		}
+		log.Printf("Successfully stored event with ID: %d", storedEvent.ID)
+		c.JSON(http.StatusCreated, storedEvent)
+		return
+	}
+	
+	// If simple extraction didn't work, try the more complex MIME parsing
+	log.Printf("Simple extraction failed, trying MIME parsing for content: %q", contentToProcess)
+	plainData, err := utils.ExtractPlain([]byte(contentToProcess))
 	if err != nil {
 		log.Printf("Failed to extract plain data: %v", err)
-		plainData = incoming.Data.Data // fallback to original
+		plainData = contentToProcess // fallback to original
 	}
+	log.Printf("Result after MIME extraction: %q", plainData)
 	dataToStore := plainData
 	// --- End: Extract only the inline MIME part if present ---
 
@@ -115,6 +189,8 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 	}
 
 	log.Printf("Storing event: %+v", event)
+	log.Printf("DEBUG: EventRequest struct: tags=%v, data=%q (length=%d), source=%s", 
+		event.Tags, event.Data, len(event.Data), event.Source)
 	storedEvent, err := h.db.StoreEvent(event)
 	if err != nil {
 		log.Printf("Failed to store event: %v", err)
@@ -173,6 +249,43 @@ func (h *Handler) HandleGetEventsByTag(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// extractSimpleContent tries to extract content from MIME messages by looking for content after headers
+func extractSimpleContent(content string) string {
+	// Split by lines
+	lines := strings.Split(content, "\n")
+	
+	// Find a blank line (which typically separates headers from content)
+	inContent := false
+	var contentLines []string
+	
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		
+		// When we find a blank line, we're transitioning into content
+		if trimmedLine == "" && !inContent {
+			inContent = true
+			continue
+		}
+		
+		// If we're in the content section and hit a boundary line, we're done
+		if inContent && strings.HasPrefix(trimmedLine, "--") {
+			break
+		}
+		
+		// If we're in content, collect the line
+		if inContent {
+			contentLines = append(contentLines, line)
+		}
+	}
+	
+	// Join the content lines
+	if len(contentLines) > 0 {
+		return strings.TrimSpace(strings.Join(contentLines, "\n"))
+	}
+	
+	return ""
 }
 
 // HandleGetEventsByDate handles GET requests to retrieve events by date (YYYY-MM-DD)
