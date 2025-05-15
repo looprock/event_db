@@ -34,7 +34,16 @@ func (d *Database) Close() error {
 }
 
 // LogEventStatus logs the status of an event operation
+// If eventID is 0, this logs to stdout instead of the database (avoids foreign key constraint violation)
 func (d *Database) LogEventStatus(eventID int64, status string, errorMessage string) error {
+	// If eventID is 0, it means the event hasn't been created yet
+	// Just log to stdout to avoid foreign key constraint violation
+	if eventID == 0 {
+		log.Printf("Event log (pre-insert): status=%s, error=%s", status, errorMessage)
+		return nil
+	}
+	
+	// For valid event IDs, log to the database
 	_, err := d.db.Exec(
 		"INSERT INTO event_logs (event_id, status, error_message) VALUES ($1, $2, $3)",
 		eventID,
@@ -50,10 +59,9 @@ func (d *Database) LogEventStatus(eventID int64, status string, errorMessage str
 func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error) {
 	tagsJSON, err := json.Marshal(event.Tags)
 	if err != nil {
-		if logErr := d.LogEventStatus(0, "error", fmt.Sprintf("failed to marshal tags: %v", err)); logErr != nil {
-			log.Printf("Failed to log error: %v", logErr)
-		}
-		return nil, err
+		// Log pre-insert error (will be logged to stdout since event ID is 0)
+		_ = d.LogEventStatus(0, "error", fmt.Sprintf("failed to marshal tags: %v", err))
+		return nil, fmt.Errorf("failed to marshal tags: %w", err)
 	}
 
 	cleanData := strings.TrimRight(event.Data, "\r\n")
@@ -67,14 +75,14 @@ func (d *Database) StoreEvent(event *models.EventRequest) (*models.Event, error)
 		time.Now(),
 	).Scan(&id)
 	if err != nil {
-		if logErr := d.LogEventStatus(0, "error", fmt.Sprintf("failed to insert event: %v", err)); logErr != nil {
-			log.Printf("Failed to log error: %v", logErr)
-		}
-		return nil, err
+		// Log pre-insert error (will be logged to stdout since event ID is 0)
+		_ = d.LogEventStatus(0, "error", fmt.Sprintf("failed to insert event: %v", err))
+		return nil, fmt.Errorf("failed to insert event: %w", err)
 	}
 
+	// Now that we have a valid event ID, log the success in the database
 	if err := d.LogEventStatus(id, "success", ""); err != nil {
-		log.Printf("Failed to log success: %v", err)
+		log.Printf("Warning: Event was stored but failed to log success: %v", err)
 	}
 
 	return &models.Event{

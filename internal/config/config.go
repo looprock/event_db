@@ -34,6 +34,14 @@ func LoadConfig() (*Config, error) {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("./config")
+	
+	// Handle environment variables
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+	
+	// Set up environment variables with prefix
+	viper.SetEnvPrefix("MAILREADER")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	// Set defaults
@@ -54,7 +62,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Allow env var override for sensitive fields
+	// Allow env var override for sensitive fields but keep config file values if present
+	// Only override config with environment variables if they are explicitly set
+	// This preserves config file values when environment vars aren't present
 	if v := viper.GetString("DATABASE_PASSWORD"); v != "" {
 		cfg.Database.Password = v
 	}
@@ -66,6 +76,16 @@ func LoadConfig() (*Config, error) {
 	}
 	if v := viper.GetString("SERVER_API_TOKEN"); v != "" {
 		cfg.Server.APIToken = v
+	}
+	
+	// If API token is not set after loading config and checking env vars, log a warning
+	if cfg.Server.APIToken == "" {
+		fmt.Println("Warning: No API token found. Set in config file (server.api_token) or SERVER_API_TOKEN env var.")
+	}
+	
+	// Ensure API token is set - if we have one from the config file, we should use it
+	if cfg.Server.APIToken == "" {
+		log.Println("Warning: No API token found. Set in config file (server.api_token) or SERVER_API_TOKEN env var.")
 	}
 
 	cfg.Server.Domain = strings.TrimSpace(cfg.Server.Domain)
