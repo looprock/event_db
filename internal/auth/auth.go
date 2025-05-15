@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -162,8 +163,8 @@ func SetSessionCookie(w http.ResponseWriter, session *Session) {
 		Value:    session.ID,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true, // Requires HTTPS
-		SameSite: http.SameSiteStrictMode,
+		Secure:   false, // Allow HTTP access
+		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	}
 	http.SetCookie(w, cookie)
@@ -176,8 +177,8 @@ func ClearSessionCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
+		Secure:   false, // Allow HTTP access
+		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(-1 * time.Hour),
 		MaxAge:   -1,
 	}
@@ -199,25 +200,33 @@ func (a *Auth) InitializeDefaultUsers() {
 // RequireAuth is middleware that checks if a user is authenticated
 func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Auth middleware checking request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		
 		cookie, err := r.Cookie("session")
 		if err != nil {
+			log.Printf("No session cookie found: %v - redirecting to login", err)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		log.Printf("Found session cookie: %s", cookie.Value)
 
 		session, err := a.GetSession(cookie.Value)
 		if err != nil {
+			log.Printf("Invalid session: %v - clearing cookie and redirecting", err)
 			ClearSessionCookie(w)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		log.Printf("Valid session found for user ID: %d", session.UserID)
 
 		user, err := a.GetUserByID(session.UserID)
 		if err != nil {
+			log.Printf("User not found for session: %v - clearing cookie and redirecting", err)
 			ClearSessionCookie(w)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		log.Printf("User authenticated: %s (ID: %d), proceeding to handler", user.Username, user.ID)
 
 		// Store user in request context
 		ctx := SetUserInContext(r.Context(), user)

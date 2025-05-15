@@ -145,6 +145,9 @@ func (h *WebHandler) SetupRoutes(r *mux.Router) {
 	// Events redirect for backward compatibility with existing links
 	r.HandleFunc("/events", h.HandleEventsRedirect).Methods("GET")
 	
+	// Debug routes
+	r.HandleFunc("/debug/auth", h.HandleAuthDebug).Methods("GET")
+	
 	// Protected routes
 	protected := r.NewRoute().Subrouter()
 	protected.Use(h.auth.RequireAuth)
@@ -172,15 +175,24 @@ func (h *WebHandler) renderTemplate(w http.ResponseWriter, name string, data Tem
 
 // HandleLogin handles the login page
 func (h *WebHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Login page accessed from IP: %s, User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
 	// Check if user is already logged in
 	if cookie, err := r.Cookie("session"); err == nil {
+		log.Printf("Session cookie found: %s", cookie.Value)
 		if session, err := h.auth.GetSession(cookie.Value); err == nil {
+			log.Printf("Valid session found for ID: %s", cookie.Value)
 			if user, _ := h.auth.GetUserByID(session.UserID); user != nil {
+				log.Printf("User already logged in: %s (ID: %d)", user.Username, user.ID)
 				// User is logged in, redirect to home (which will show events)
 				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
 			}
+		} else {
+			log.Printf("Session validation failed: %v", err)
 		}
+	} else {
+		log.Printf("No session cookie found: %v", err)
 	}
 	
 	data := TemplateData{}
@@ -204,33 +216,49 @@ func (h *WebHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 // HandleLoginPost handles the login form submission
 func (h *WebHandler) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Login attempt from IP: %s, User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
 	username := r.FormValue("username")
 	password := r.FormValue("password")
+	log.Printf("Login attempt for username: %s", username)
 
 	user, err := h.auth.Authenticate(username, password)
 	if err != nil {
+		log.Printf("Authentication failed for user '%s': %v", username, err)
 		// Redirect back to login with error
 		http.Redirect(w, r, "/login?error=Invalid+username+or+password.+Please+try+again.", http.StatusSeeOther)
 		return
 	}
 
+	log.Printf("Authentication successful for user: %s (ID: %d)", user.Username, user.ID)
 	session, err := h.auth.CreateSession(user.ID)
 	if err != nil {
+		log.Printf("Failed to create session for user %s: %v", user.Username, err)
 		http.Redirect(w, r, "/login?error=Failed+to+create+session.+Please+try+again+later.", http.StatusSeeOther)
 		return
 	}
 
+	log.Printf("Created session ID: %s for user: %s (expires: %v)", session.ID, user.Username, session.ExpiresAt)
 	auth.SetSessionCookie(w, session)
+	log.Printf("Set session cookie and redirecting to home page")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // HandleLogout handles user logout
 func (h *WebHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Logout request from IP: %s, User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
 	// Handle both GET and POST requests for logout
 	if cookie, err := r.Cookie("session"); err == nil {
+		log.Printf("Found session cookie to delete: %s", cookie.Value)
 		h.auth.DeleteSession(cookie.Value)
+		log.Printf("Session deleted: %s", cookie.Value)
+	} else {
+		log.Printf("No session cookie found during logout: %v", err)
 	}
+	
 	auth.ClearSessionCookie(w)
+	log.Printf("Session cookie cleared, redirecting to login page")
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -238,16 +266,30 @@ func (h *WebHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 // HandleRoot displays either welcome page or events based on login status
 func (h *WebHandler) HandleRoot(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Root page accessed from IP: %s, User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
 	// Check if user is logged in
 	var user *auth.User
 	if cookie, err := r.Cookie("session"); err == nil {
+		log.Printf("Found session cookie: %s", cookie.Value)
 		if session, err := h.auth.GetSession(cookie.Value); err == nil {
-			user, _ = h.auth.GetUserByID(session.UserID)
+			log.Printf("Session validated: %s, user ID: %d", session.ID, session.UserID)
+			user, err = h.auth.GetUserByID(session.UserID)
+			if err != nil {
+				log.Printf("Error finding user for session: %v", err)
+			} else if user != nil {
+				log.Printf("User authenticated: %s (ID: %d)", user.Username, user.ID)
+			}
+		} else {
+			log.Printf("Invalid session: %v", err)
 		}
+	} else {
+		log.Printf("No session cookie found: %v", err)
 	}
 	
 	// If user is logged in, show events list
 	if user != nil {
+		log.Printf("Showing events list for authenticated user: %s", user.Username)
 		h.displayEventsList(w, r, user)
 		return
 	}
@@ -710,6 +752,53 @@ func (h *WebHandler) HandleDebug(w http.ResponseWriter, r *http.Request) {
 	// Render raw debug info
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, output)
+}
+
+// HandleAuthDebug displays authentication debugging information
+func (h *WebHandler) HandleAuthDebug(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Auth debug endpoint accessed from IP: %s, User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
+	// Build debug info
+	output := "Authentication Debug Information\n\n"
+	output += fmt.Sprintf("Request Time: %s\n", time.Now().Format(time.RFC3339))
+	output += fmt.Sprintf("Remote Address: %s\n", r.RemoteAddr)
+	output += fmt.Sprintf("User Agent: %s\n", r.UserAgent())
+	output += fmt.Sprintf("Method: %s\n", r.Method)
+	output += fmt.Sprintf("URL: %s\n", r.URL.String())
+	output += fmt.Sprintf("Host: %s\n", r.Host)
+	
+	// Check cookies
+	output += "\nCookies:\n"
+	for _, cookie := range r.Cookies() {
+		output += fmt.Sprintf("- %s: %s (Path: %s, Domain: %s, Expires: %v, MaxAge: %d, Secure: %t, HttpOnly: %t, SameSite: %d)\n", 
+			cookie.Name, cookie.Value, cookie.Path, cookie.Domain, cookie.Expires, cookie.MaxAge, cookie.Secure, cookie.HttpOnly, cookie.SameSite)
+	}
+	
+	// Check session
+	output += "\nSession Status:\n"
+	if cookie, err := r.Cookie("session"); err == nil {
+		output += fmt.Sprintf("Session Cookie Found: %s\n", cookie.Value)
+		
+		if session, err := h.auth.GetSession(cookie.Value); err == nil {
+			output += fmt.Sprintf("Valid Session: ID=%s, UserID=%d, Created=%v, Expires=%v\n", 
+				session.ID, session.UserID, session.CreatedAt, session.ExpiresAt)
+			
+			if user, err := h.auth.GetUserByID(session.UserID); err == nil {
+				output += fmt.Sprintf("User Found: ID=%d, Username=%s, Role=%s, Created=%v\n", 
+					user.ID, user.Username, user.Role, user.CreatedAt)
+			} else {
+				output += fmt.Sprintf("User Lookup Error: %v\n", err)
+			}
+		} else {
+			output += fmt.Sprintf("Invalid Session: %v\n", err)
+		}
+	} else {
+		output += fmt.Sprintf("No Session Cookie Found: %v\n", err)
+	}
+	
+	// Render raw debug info with monospace font
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, "<html><head><title>Auth Debug</title></head><body style=\"font-family: monospace; white-space: pre-wrap;\">%s</body></html>", output)
 }
 
 // Helper methods
