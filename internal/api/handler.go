@@ -59,7 +59,7 @@ func (h *Handler) HandleEventReceive(c *gin.Context) {
 			From                    string              `json:"from"`
 			To                      string              `json:"to"`
 			Subject                 string              `json:"subject"`
-			Data                    string              `json:"data"`
+			Data                    string              `json:"body"`
 			Cc                      []string            `json:"cc,omitempty"`
 			Bcc                     []string            `json:"bcc,omitempty"`
 			MessageID               string              `json:"message_id,omitempty"`
