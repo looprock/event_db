@@ -1,0 +1,268 @@
+{{ define "edit.html" }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Event | Event Database</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 0; 
+            display: flex; 
+            flex-direction: column; 
+            min-height: 100vh; 
+        }
+        header { 
+            background-color: #333; 
+            color: white; 
+            padding: 1rem; 
+        }
+        header a {
+            color: white;
+            text-decoration: none;
+        }
+        header a:hover {
+            text-decoration: underline;
+        }
+        .nav-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .nav-left {
+            display: flex;
+            align-items: center;
+        }
+        .nav-right {
+            display: flex;
+            align-items: center;
+        }
+        main { 
+            flex: 1; 
+            padding: 1rem; 
+        }
+        footer { 
+            background-color: #333; 
+            color: white; 
+            padding: 1rem; 
+            text-align: center; 
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+        }
+        .card { 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+            padding: 20px; 
+            margin-bottom: 20px; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+        }
+        .button { 
+            display: inline-block; 
+            background-color: #3498db; 
+            color: white; 
+            padding: 10px 15px; 
+            text-decoration: none; 
+            border-radius: 4px; 
+            margin-right: 10px; 
+            margin-top: 10px; 
+            border: none;
+            cursor: pointer;
+        }
+        .button:hover { 
+            background-color: #2980b9; 
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        .form-group input[type="text"],
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .form-group textarea {
+            min-height: 150px;
+            resize: vertical;
+        }
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .alert-danger {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .alert-success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .tag-input {
+            display: flex;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .tag-badge {
+            background-color: #e9ecef;
+            padding: 5px 10px;
+            margin: 5px;
+            border-radius: 15px;
+            display: inline-flex;
+            align-items: center;
+        }
+        .tag-badge .remove {
+            cursor: pointer;
+            margin-left: 8px;
+            color: #dc3545;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="nav-container">
+                <div class="nav-left">
+                    <h1>Event Database</h1>
+                    <nav style="margin-left: 20px;">
+                        <a href="/">Home</a>
+                    </nav>
+                </div>
+                <div class="nav-right">
+                    <a href="/logout">Logout</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <h2>Edit Event</h2>
+            
+            {{if .FlashMessage}}
+            <div class="alert {{if eq .FlashType "error"}}alert-danger{{else}}alert-success{{end}}">
+                {{.FlashMessage}}
+            </div>
+            {{end}}
+            
+            <div class="card">
+                <form action="/events/{{.Event.ID}}/edit" method="POST">
+                    <div class="form-group">
+                        <label for="data">Event Data:</label>
+                        <textarea id="data" name="data" required>{{.Event.Data}}</textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="tags">Tags (comma separated):</label>
+                        <input type="text" id="tags" name="tags" value="{{range $index, $tag := .Event.Tags}}{{if $index}}, {{end}}{{$tag}}{{end}}">
+                        <div class="tag-input" id="tag-display">
+                            <!-- Tags will be displayed here -->
+                        </div>
+                        <input type="hidden" id="tags_hidden" name="tags" value="{{range $index, $tag := .Event.Tags}}{{if $index}}, {{end}}{{$tag}}{{end}}">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="source">Source (optional):</label>
+                        <input type="text" id="source" name="source" value="{{.Event.Source}}">
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between;">
+                        <a href="/" class="button" style="background-color: #6c757d;">Cancel</a>
+                        <button type="submit" class="button">Update Event</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Event Database</p>
+        </div>
+    </footer>
+
+    <script>
+        // Simple tag input functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const tagInput = document.getElementById('tags');
+            const tagDisplay = document.getElementById('tag-display');
+            
+            // Make form submission use the hidden input value
+            document.querySelector('form').addEventListener('submit', function() {
+                updateHiddenInput();
+                return true;
+            });
+            
+            // Initial setup - populate tags from the input value
+            if (tagInput.value) {
+                const initialTags = tagInput.value.split(',');
+                initialTags.forEach(tag => {
+                    const trimmed = tag.trim();
+                    if (trimmed) addTag(trimmed);
+                });
+                // Clear the input after adding the tags visually
+                tagInput.value = '';
+            }
+            
+            const tagsHidden = document.getElementById('tags_hidden');
+            
+            tagInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault();
+                    const value = tagInput.value.trim();
+                    if (value) {
+                        addTag(value);
+                        tagInput.value = '';
+                    }
+                }
+            });
+            
+            tagInput.addEventListener('blur', function() {
+                const value = tagInput.value.trim();
+                if (value) {
+                    const tags = value.split(',');
+                    tags.forEach(tag => {
+                        const trimmed = tag.trim();
+                        if (trimmed) addTag(trimmed);
+                    });
+                    tagInput.value = '';
+                }
+            });
+            
+            function addTag(text) {
+                const badge = document.createElement('span');
+                badge.className = 'tag-badge';
+                badge.innerHTML = text + '<span class="remove">×</span>';
+                
+                badge.querySelector('.remove').addEventListener('click', function() {
+                    badge.remove();
+                    updateHiddenInput();
+                });
+                
+                tagDisplay.appendChild(badge);
+                updateHiddenInput();
+            }
+            
+            function updateHiddenInput() {
+                const tags = Array.from(tagDisplay.querySelectorAll('.tag-badge'))
+                    .map(badge => badge.textContent.replace('×', '').trim());
+                tagsHidden.value = tags.join(', ');
+            }
+        });
+    </script>
+</body>
+</html>
+{{ end }}

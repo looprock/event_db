@@ -1,0 +1,187 @@
+{{ define "view.html" }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Event | Event Database</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 0; 
+            display: flex; 
+            flex-direction: column; 
+            min-height: 100vh; 
+        }
+        header { 
+            background-color: #333; 
+            color: white; 
+            padding: 1rem; 
+        }
+        header a {
+            color: white;
+            text-decoration: none;
+        }
+        header a:hover {
+            text-decoration: underline;
+        }
+        .nav-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .nav-left {
+            display: flex;
+            align-items: center;
+        }
+        .nav-right {
+            display: flex;
+            align-items: center;
+        }
+        main { 
+            flex: 1; 
+            padding: 1rem; 
+        }
+        footer { 
+            background-color: #333; 
+            color: white; 
+            padding: 1rem; 
+            text-align: center; 
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+        }
+        .card { 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+            padding: 20px; 
+            margin-bottom: 20px; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+        }
+        .button { 
+            display: inline-block; 
+            background-color: #3498db; 
+            color: white; 
+            padding: 10px 15px; 
+            text-decoration: none; 
+            border-radius: 4px; 
+            margin-right: 10px;
+        }
+        .button:hover { 
+            background-color: #2980b9; 
+        }
+        .button.delete {
+            background-color: #e74c3c;
+        }
+        .button.delete:hover {
+            background-color: #c0392b;
+        }
+        .button.edit {
+            background-color: #f39c12;
+        }
+        .button.edit:hover {
+            background-color: #d35400;
+        }
+        .tag-link {
+            display: inline-block;
+            background-color: #eee;
+            padding: 5px 10px;
+            margin: 5px;
+            border-radius: 15px;
+            text-decoration: none;
+            color: #333;
+        }
+        .tag-link:hover {
+            background-color: #ddd;
+        }
+        .event-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+        }
+        .event-content {
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #eee;
+            white-space: pre-wrap;
+            margin-bottom: 20px;
+        }
+        .actions {
+            margin-top: 30px;
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="nav-container">
+                <div class="nav-left">
+                    <h1>Event Database</h1>
+                    <nav style="margin-left: 20px;">
+                        <a href="/">Home</a>
+                    </nav>
+                </div>
+                <div class="nav-right">
+                    <a href="/logout">Logout</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <h2>Event Details</h2>
+            
+            {{if .FlashMessage}}
+            <div class="alert {{if eq .FlashType "error"}}alert-danger{{else}}alert-success{{end}}">
+                {{.FlashMessage}}
+            </div>
+            {{end}}
+            
+            <div class="card">
+                <div class="event-meta">
+                    <strong>ID:</strong> {{.Event.ID}}<br>
+                    <strong>Created:</strong> {{.Event.CreatedAt.Format "January 2, 2006 at 3:04 PM"}}<br>
+                    {{if .Event.Source}}
+                    <strong>Source:</strong> {{.Event.Source}}<br>
+                    {{end}}
+                </div>
+                
+                {{if .Event.Tags}}
+                <div>
+                    <strong>Tags:</strong>
+                    {{range .Event.Tags}}
+                    <a href="/?tag={{.}}" class="tag-link">{{.}}</a>
+                    {{end}}
+                </div>
+                {{end}}
+                
+                <h3>Content</h3>
+                <div class="event-content">{{.Event.Data}}</div>
+                
+                <div class="actions">
+                    <div>
+                        <a href="/" class="button">Back to Events</a>
+                    </div>
+                    <div>
+                        <a href="/events/{{.Event.ID}}/edit" class="button edit">Edit Event</a>
+                        <a href="/events/{{.Event.ID}}/delete" class="button delete" onclick="return confirm('Are you sure you want to delete this event?')">Delete Event</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Event Database</p>
+        </div>
+    </footer>
+</body>
+</html>
+{{ end }}
